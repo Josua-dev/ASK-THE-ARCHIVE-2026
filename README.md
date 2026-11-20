@@ -8,7 +8,7 @@ A secure, permission-scoped RAG system that lets authorised users ask natural-la
 
 ## 🎯 Project Overview
 
-| Aspect | Details |
+| Aspect | Details | 
 |--------|---------|
 | **Challenge** | TDW × AWS Innovation Challenge |
 | **Backend** | Python 3.12, FastAPI, SQLAlchemy 2, pgvector |
