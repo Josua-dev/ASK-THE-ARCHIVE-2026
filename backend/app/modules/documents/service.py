@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import ForbiddenError, NotFoundError, ValidationError
+from app.core.security import create_signed_link
 from app.db.models.chunk import DocumentChunk
 from app.db.models.document import Document
 from app.db.models.user import User
@@ -59,7 +60,7 @@ async def upload_document(
 
     document = Document(
         id=document_id,
-        s3_key=key,
+        storage_key=key,
         filename=filename,
         content_type=content_type,
         byte_size=len(body),
@@ -129,15 +130,23 @@ async def document_chunks(
 async def get_download_url(
     session: AsyncSession, user: User, document_id: uuid.UUID
 ) -> tuple[str, int]:
-    """Permission-checked download. Returns (url, expires_in_seconds)."""
+    """Permission-checked download. Returns (url, expires_in_seconds).
+
+    The URL points at the local raw-file route and carries a short-lived HMAC
+    token bound to this one document. The route re-checks the signed scope
+    before it reads anything from disk, so the token cannot be replayed
+    against another document or another endpoint.
+    """
     document = await session.get(Document, document_id)
     if document is None:
         raise NotFoundError("Document not found")
     if not await can_access_document(session, user, document_id, need="download"):
         raise ForbiddenError("You do not have permission to download this document")
-    storage = get_storage()
-    expires = 60
-    url = await storage.generate_presigned_url(document.s3_key, expires_in=expires)
+    expires = settings.signed_link_ttl_sec
+    token = create_signed_link(
+        scope=f"download:{document_id}", secret=settings.jwt_secret, ttl_sec=expires
+    )
+    url = f"/api/v1/documents/raw/{document_id}?token={token}"
     return url, expires
 
 

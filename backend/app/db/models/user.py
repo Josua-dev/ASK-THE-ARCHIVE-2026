@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Boolean, Column, Index, Text, func
+from sqlalchemy import Boolean, Column, ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from app.db.base import Base
@@ -19,6 +19,14 @@ class User(Base):
     password_hash = Column(Text, nullable=False)
     role = Column(user_role(), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    # The department this user belongs to. Used to scope group-based and
+    # department-based document permissions.
+    department_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("departments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(tstz(), nullable=False, default=utcnow)
     updated_at = Column(tstz(), nullable=False, default=utcnow, onupdate=utcnow)
 

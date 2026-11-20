@@ -26,6 +26,7 @@ Thumbs.db
 backend/*.log
 backend/*.err.log
 backend/*token*.txt
+backend/login
 backend/login.json
 backend/ask_resp.json
 backend/uv8000*

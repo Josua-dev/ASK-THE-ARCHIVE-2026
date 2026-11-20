@@ -1,4 +1,11 @@
-"""Application configuration — read from environment, nothing hardcoded."""
+"""Application configuration — read from environment, nothing hardcoded.
+
+Every provider is local-first. The stack ships with no cloud dependencies:
+PostgreSQL + pgvector for storage, Ollama for inference, Sentence Transformers
+for embeddings, Tesseract for OCR, and the local filesystem for document
+blobs. A hosted Claude endpoint is supported as an optional alternative to
+Ollama, selected with a single environment variable.
+"""
 
 from functools import lru_cache
 from typing import List
@@ -14,50 +21,89 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Database
+    # ── Database ──────────────────────────────────────────────────────────
     database_url: str
     database_url_pooled: str | None = None
 
-    # Auth
+    # ── Auth ──────────────────────────────────────────────────────────────
     jwt_secret: str
     jwt_access_ttl_min: int = 30
     jwt_refresh_ttl_days: int = 7
+    # Signed, single-purpose token that authorises a document download or a
+    # page preview without exposing the session token in a URL.
+    signed_link_ttl_sec: int = 120
 
-    # AWS
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
-    aws_session_token: str | None = None
-    aws_region: str = "us-east-1"
-    s3_bucket_name: str | None = None
-    s3_kms_key_id: str | None = None
+    # ── Storage (local filesystem) ─────────────────────────────────────────
+    storage_impl: str = "local"
+    storage_root: str = "uploads"
+    # Public base path the browser uses to fetch a stored object.
+    storage_public_base: str = "/api/v1/documents/raw"
 
-    # Bedrock
-    # Inference-profile ID (on-demand model IDs for newer models need a profile).
-    bedrock_model_id: str = "us.amazon.nova-lite-v1:0"
-    bedrock_embed_model_id: str = "amazon.titan-embed-text-v2:0"
-    # Tried in order when the primary model is throttled. Bedrock's daily
-    # token allowance is account-wide, so this rarely rescues a daily
-    # throttle — but it does rescue a per-model limit, and it costs nothing.
-    bedrock_fallback_model_ids: str = (
-        "us.amazon.nova-micro-v1:0,meta.llama3-1-8b-instruct-v1:0,"
-        "mistral.mistral-7b-instruct-v0:2"
-    )
+    # ── Document extraction ───────────────────────────────────────────────
+    # "pymupdf" (default) — PyMuPDF text layer + page rasterisation.
+    # "pdfplumber" — legacy fallback.
+    extractor_impl: str = "pymupdf"
+    # "tesseract" — OCR scanned pages and images.
+    # "none" — skip OCR entirely.
+    ocr_impl: str = "tesseract"
+    # Explicit path to the tesseract binary, e.g. "C:/Program Files/Tesseract-OCR/tesseract.exe".
+    # Leave empty to rely on PATH.
+    tesseract_cmd: str = ""
+    # Minimum characters on a page before OCR is considered necessary.
+    ocr_min_chars_per_page: int = 32
+    # Resolution used when rasterising a page for OCR or preview.
+    render_dpi: int = 144
+    # Longest edge, in pixels, of a rendered preview page.
+    preview_max_px: int = 1600
 
-    # Provider selection (AWS active by default; local fallbacks when creds absent)
-    storage_impl: str = "local"  # "s3" once a bucket is provisioned
-    extractor_impl: str = "pdfplumber"  # "textract" if the account allows it
-    embedder_impl: str = "bge-m3"  # "titan-v2" once Bedrock embedding quota is available
-    llm_impl: str = "bedrock-converse"
+    # ── Embeddings (Sentence Transformers) ────────────────────────────────
+    # "sentence-transformers" (default) — local ONNX/PyTorch model.
+    # "hash" — deterministic offline fallback, no model download.
+    # "ollama" — Ollama's embedding models.
+    embedder_impl: str = "sentence-transformers"
+    embedding_model_name: str = "BAAI/bge-m3"
+    # Must match the vector width of the document_chunks.embedding column.
+    embedding_dimensions: int = 1024
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = 16
+    # Set to 1 to forbid the model download and use the local cache only.
+    embedding_offline: bool = False
 
-    # Cognito (user-pool-based authentication; set these env vars to enable)
-    cognito_region: str = ""
-    cognito_user_pool_id: str = ""
-    cognito_app_client_id: str = ""
+    # ── LLM ───────────────────────────────────────────────────────────────
+    # "ollama" (default) — local inference, nothing leaves the machine.
+    # "anthropic" — Claude Sonnet 5.5 via the Anthropic API.
+    # "extractive" — deterministic, model-free answering.
+    llm_impl: str = "ollama"
 
-    # RAG / retrieval tuning
+    # Ollama
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:7b-instruct"
+    ollama_embed_model: str = "nomic-embed-text"
+    ollama_timeout_sec: int = 300
+    ollama_num_ctx: int = 16384
+    ollama_keep_alive: str = "5m"
+    # Seconds to wait for the model to become ready before giving up.
+    ollama_probe_timeout_sec: int = 5
+
+    # Anthropic (Claude) — optional hosted alternative to Ollama.
+    # Not used unless LLM_IMPL=anthropic; the key is read from the
+    # environment (ANTHROPIC_API_KEY) and never logged.
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5-5"
+    anthropic_max_tokens: int = 8192
+    anthropic_effort: str = "high"
+    anthropic_timeout_sec: int = 300
+
+    # ── RAG / retrieval tuning ────────────────────────────────────────────
     min_score: float = 0.30
     top_k: int = 6
     max_upload_mb: int = 50
+    # Target size of an indexed chunk, in characters.
+    chunk_target_chars: int = 1200
+    chunk_overlap_chars: int = 160
+    # Hard ceiling on the characters handed to the model for one question.
+    max_context_chars: int = 24000
+
     allowed_mime_types: str = (
         "application/pdf,"
         "image/png,image/jpeg,image/tiff,image/bmp,"
@@ -69,16 +115,21 @@ class Settings(BaseSettings):
         "text/html"
     )
 
-    # CORS
+    # ── CORS ──────────────────────────────────────────────────────────────
     cors_origins: str = "http://localhost:3000"
+
+    # ── Seed data ─────────────────────────────────────────────────────────
+    seed_admin_email: str = "admin@askthearchive.local"
+    seed_admin_password: str = "ArchiveAdmin!2026"
+    seed_demo_password: str = "ArchiveDemo!2026"
 
     @property
     def async_database_url(self) -> str:
         """asyncpg-compatible URL derived from the libpq-style DATABASE_URL.
 
-        Neon hands out `postgresql://…?sslmode=require&channel_binding=require`.
-        asyncpg needs the `+asyncpg` driver and rejects those query args, so we
-        swap the scheme and express TLS as `ssl=require`.
+        Managed Postgres hands out `postgresql://…?sslmode=require`. asyncpg
+        needs the `+asyncpg` driver and rejects those query args, so the
+        scheme is swapped and TLS is expressed as `ssl=require`.
         """
         from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 

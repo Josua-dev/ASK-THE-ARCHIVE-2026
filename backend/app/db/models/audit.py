@@ -17,6 +17,9 @@ class AuditLog(Base):
     action = Column(Text, nullable=False)
     resource_type = Column(Text, nullable=True)
     resource_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    # A human-readable name for the resource ("Harbour Street Lease.pdf"),
+    # so the audit trail stays legible after the resource is deleted.
+    resource_label = Column(Text, nullable=True)
     ip = Column(Text, nullable=True)
     user_agent = Column(Text, nullable=True)
     # `metadata` is reserved on declarative classes, so the attribute is `meta`.

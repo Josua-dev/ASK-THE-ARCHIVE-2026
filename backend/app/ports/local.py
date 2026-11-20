@@ -1,4 +1,9 @@
-"""Local adapters — real local implementations used when AWS creds are absent."""
+"""Local adapters — the platform's own implementations of every port.
+
+Nothing here reaches a cloud service. Document bytes live on the local
+filesystem, text and page images come from PyMuPDF, OCR comes from Tesseract,
+embeddings come from Sentence Transformers, and answers come from Ollama.
+"""
 
 import asyncio
 import re
@@ -15,13 +20,23 @@ from app.ports.llm import NO_ANSWER, LlmPort, LlmResponse
 
 
 class LocalStorageAdapter(StoragePort):
+    """Stores document bytes on the local filesystem.
+
+    Object keys are mapped to paths beneath `base_dir`; traversal outside that
+    directory is rejected, because the key arrives from a query string.
+    """
+
     def __init__(self, base_dir: str = "uploads"):
-        self.base_dir = Path(base_dir)
+        self.base_dir = Path(base_dir).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, key: str) -> Path:
         safe = key.replace("\\", "/").lstrip("/")
-        return self.base_dir / safe
+        path = (self.base_dir / safe).resolve()
+        # A key such as "../../etc/passwd" must not escape the storage root.
+        if not str(path).startswith(str(self.base_dir)):
+            raise ValueError("Invalid storage key")
+        return path
 
     async def put_object(self, key, body, content_type, metadata=None) -> str:
         path = self._path(key)
@@ -32,17 +47,53 @@ class LocalStorageAdapter(StoragePort):
     async def get_object(self, key) -> bytes:
         return self._path(key).read_bytes()
 
-    async def generate_presigned_url(self, key, expires_in=60) -> str:
-        return f"/api/v1/documents/raw?key={key}"
-
     async def object_exists(self, key) -> bool:
-        return self._path(key).exists()
+        try:
+            return self._path(key).exists()
+        except ValueError:
+            return False
+
+    async def delete_object(self, key) -> None:
+        try:
+            path = self._path(key)
+        except ValueError:
+            return
+        if path.exists():
+            path.unlink()
 
 
 # ───────────────────────────── Extractor ─────────────────────────────
 
 
+class PyMuPdfExtractorAdapter(ExtractorPort):
+    """PDF extraction via PyMuPDF, with Tesseract OCR for scanned pages."""
+
+    def __init__(
+        self,
+        ocr=None,
+        *,
+        render_dpi: int = 144,
+        ocr_min_chars_per_page: int = 32,
+    ):
+        self.ocr = ocr
+        self.render_dpi = render_dpi
+        self.ocr_min_chars_per_page = ocr_min_chars_per_page
+
+    async def extract(self, document_bytes, filename, content_type) -> ExtractionResult:
+        from app.ports.pdf import PyMuPdfAdapter
+
+        adapter = PyMuPdfAdapter(
+            ocr=self.ocr,
+            render_dpi=self.render_dpi,
+            ocr_min_chars_per_page=self.ocr_min_chars_per_page,
+        )
+        # PyMuPDF is CPU-bound; keep the event loop free while it runs.
+        return await asyncio.to_thread(adapter.extract, document_bytes)
+
+
 class PdfPlumberExtractorAdapter(ExtractorPort):
+    """Legacy PDF extraction via pdfplumber (kept as a fallback)."""
+
     async def extract(self, document_bytes, filename, content_type) -> ExtractionResult:
         pages = []
         try:
@@ -163,28 +214,30 @@ class ImageExtractorAdapter(ExtractorPort):
     Debian/Ubuntu: apt-get install tesseract-ocr).
     """
 
+    def __init__(self, ocr=None):
+        self.ocr = ocr
+
     async def extract(self, document_bytes, filename, content_type) -> ExtractionResult:
+        engine = self.ocr
+        if engine is None:
+            from app.ports.pdf import OcrEngine
+
+            engine = OcrEngine()
+
         try:
             import io
 
-            import pytesseract
             from PIL import Image
 
-        except ImportError:  # pragma: no cover - dependency missing
-            text = "[OCR not available: pytesseract / Pillow not installed]"
-            pages = [{"page": 1, "text": text}]
-            return ExtractionResult(text=text, page_count=1, pages=pages)
-
-        try:
             image = Image.open(io.BytesIO(document_bytes))
-            text = pytesseract.image_to_string(image)
-        except pytesseract.TesseractNotFoundError:  # pragma: no cover - host config
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="PNG")
+            text = engine.image_to_text(buffer.getvalue())
+        except Exception as exc:  # noqa: BLE001 - report the reason honestly
             text = (
-                "[OCR not available: tesseract-ocr binary not found on this host. "
-                "Install it and make sure `tesseract` is on PATH.]"
+                f"[OCR unavailable: {str(exc)[:200]}. Install tesseract-ocr and "
+                "make sure `tesseract` is on PATH.]"
             )
-        except Exception:  # noqa: BLE001 - unreadable image still yields an empty page
-            text = "[OCR failed to read image]"
         pages = [{"page": 1, "text": text}]
         return ExtractionResult(text=text, page_count=1, pages=pages)
 
@@ -195,7 +248,18 @@ class MultiFormatExtractorAdapter(ExtractorPort):
     new file type is supported.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        ocr=None,
+        *,
+        render_dpi: int = 144,
+        ocr_min_chars_per_page: int = 32,
+        preview_max_px: int = 1600,
+    ):
+        self.ocr = ocr
+        self.render_dpi = render_dpi
+        self.ocr_min_chars_per_page = ocr_min_chars_per_page
+        self.preview_max_px = preview_max_px
         self._registry: dict[tuple[str | None, str | None], ExtractorPort] = {}
 
     def _pick(self, content_type: str | None, filename: str | None) -> ExtractorPort:
@@ -211,7 +275,11 @@ class MultiFormatExtractorAdapter(ExtractorPort):
         if filename:
             name = filename.lower()
             if name.endswith(".pdf"):
-                return PdfPlumberExtractorAdapter()
+                return PyMuPdfExtractorAdapter(
+                    self.ocr,
+                    render_dpi=self.render_dpi,
+                    ocr_min_chars_per_page=self.ocr_min_chars_per_page,
+                )
             if name.endswith(".docx"):
                 return DocxExtractorAdapter()
             if name.endswith(".csv"):
@@ -225,11 +293,15 @@ class MultiFormatExtractorAdapter(ExtractorPort):
             if name.endswith(".xlsx"):
                 return XlsxExtractorAdapter()
             if name.endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp")):
-                return ImageExtractorAdapter()
+                return ImageExtractorAdapter(self.ocr)
         if content_type:
             ct = content_type.lower()
             if ct == "application/pdf":
-                return PdfPlumberExtractorAdapter()
+                return PyMuPdfExtractorAdapter(
+                    self.ocr,
+                    render_dpi=self.render_dpi,
+                    ocr_min_chars_per_page=self.ocr_min_chars_per_page,
+                )
             if ct == (
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             ):
@@ -247,9 +319,13 @@ class MultiFormatExtractorAdapter(ExtractorPort):
             ):
                 return XlsxExtractorAdapter()
             if ct in ("image/png", "image/jpeg", "image/tiff", "image/bmp"):
-                return ImageExtractorAdapter()
+                return ImageExtractorAdapter(self.ocr)
         # Sensible default for anything we can't identify.
-        return PdfPlumberExtractorAdapter()
+        return PyMuPdfExtractorAdapter(
+            self.ocr,
+            render_dpi=self.render_dpi,
+            ocr_min_chars_per_page=self.ocr_min_chars_per_page,
+        )
 
     async def extract(self, document_bytes, filename, content_type) -> ExtractionResult:
         adapter = self._pick(content_type, filename)
@@ -260,8 +336,13 @@ class MultiFormatExtractorAdapter(ExtractorPort):
 
 
 class HashEmbedderAdapter(EmbedderPort):
-    """Deterministic offline embedder (1024-dim) — used only when no
-    model is available so the pipeline and tests still run end-to-end."""
+    """Deterministic offline embedder — used only when no
+    model is available so the pipeline and tests still run end-to-end.
+
+    This is a real (if shallow) lexical embedder, not random noise: identical
+    text always produces an identical vector, and vectors that share tokens
+    are measurably closer. It is deliberately the last resort.
+    """
 
     def __init__(self, dimensions: int = 1024):
         self._dimensions = dimensions
@@ -284,21 +365,41 @@ class HashEmbedderAdapter(EmbedderPort):
         return out
 
     @property
+    def dimensions(self) -> int:
+        return self._dimensions
+
+    @property
     def model_id(self) -> str:
-        return "hash-1024"
+        return f"hash-{self._dimensions}"
 
 
-class BgeM3EmbedderAdapter(EmbedderPort):
-    """Local BGE-M3 embeddings — 1024 dimensions, matching the vector(1024)
-    column and the HNSW cosine index.
+class SentenceTransformerEmbedderAdapter(EmbedderPort):
+    """Local embeddings from a Sentence Transformers model.
+
+    The default model is BAAI/bge-m3, whose native output width is 1024 —
+    the exact width of the `vector(1024)` column and its HNSW cosine index.
+    If a different model is configured the vectors are projected onto the
+    configured width (truncated or zero-padded, then re-normalised) so the
+    database column and the query vector can never disagree.
 
     The model is loaded once and kept in memory. Loading is slow and the
     encode is CPU-bound, so both run in a worker thread: the event loop must
     stay free to serve other requests while a document is being embedded.
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-m3"):
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-m3",
+        dimensions: int = 1024,
+        device: str = "cpu",
+        batch_size: int = 16,
+        offline: bool = False,
+    ):
         self.model_name = model_name
+        self._dimensions = dimensions
+        self.device = device
+        self.batch_size = batch_size
+        self.offline = offline
         self._model = None
         self._lock = asyncio.Lock()
 
@@ -314,17 +415,27 @@ class BgeM3EmbedderAdapter(EmbedderPort):
         """
         from sentence_transformers import SentenceTransformer
 
+        if self.offline:
+            import huggingface_hub.constants as hub_constants
+
+            was_offline = hub_constants.HF_HUB_OFFLINE
+            hub_constants.HF_HUB_OFFLINE = True
+            try:
+                return SentenceTransformer(self.model_name, device=self.device)
+            finally:
+                hub_constants.HF_HUB_OFFLINE = was_offline
+
         try:
             import huggingface_hub.constants as hub_constants
 
             was_offline = hub_constants.HF_HUB_OFFLINE
             hub_constants.HF_HUB_OFFLINE = True
             try:
-                return SentenceTransformer(self.model_name, device="cpu")
+                return SentenceTransformer(self.model_name, device=self.device)
             finally:
                 hub_constants.HF_HUB_OFFLINE = was_offline
         except Exception:  # noqa: BLE001 - fall back to a normal load
-            return SentenceTransformer(self.model_name, device="cpu")
+            return SentenceTransformer(self.model_name, device=self.device)
 
     async def _load(self):
         async with self._lock:
@@ -332,19 +443,103 @@ class BgeM3EmbedderAdapter(EmbedderPort):
                 self._model = await asyncio.to_thread(self._load_sync)
             return self._model
 
+    def _fit(self, row):
+        """Project a native-width vector onto the configured width."""
+        if len(row) == self._dimensions:
+            return row
+        if len(row) > self._dimensions:
+            return row[: self._dimensions]
+        return list(row) + [0.0] * (self._dimensions - len(row))
+
     async def embed(self, texts):
+        import math
+
+        texts = list(texts)
+        if not texts:
+            return []
         model = await self._load()
         arr = await asyncio.to_thread(
             model.encode,
-            list(texts),
+            texts,
+            batch_size=self.batch_size,
             convert_to_numpy=True,
             normalize_embeddings=True,
+            show_progress_bar=False,
         )
-        return [[float(x) for x in row] for row in arr]
+        out = []
+        for row in arr:
+            fitted = self._fit([float(x) for x in row])
+            norm = math.sqrt(sum(v * v for v in fitted)) or 1.0
+            out.append([v / norm for v in fitted])
+        return out
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
 
     @property
     def model_id(self) -> str:
-        return "bge-m3"
+        return self.model_name
+
+
+class OllamaEmbedderAdapter(EmbedderPort):
+    """Embeddings served by the local Ollama daemon.
+
+    Used when `EMBEDDER_IMPL=ollama`. Ollama's embedding models have their own
+    native widths (nomic-embed-text is 768), so the vectors are projected onto
+    the configured width in the same way as the Sentence Transformers adapter.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "nomic-embed-text",
+        timeout_sec: int = 300,
+        dimensions: int = 1024,
+    ):
+        self.base_url = base_url
+        self.model = model
+        self.timeout_sec = timeout_sec
+        self._dimensions = dimensions
+
+    def _fit(self, row):
+        if len(row) == self._dimensions:
+            return row
+        if len(row) > self._dimensions:
+            return row[: self._dimensions]
+        return list(row) + [0.0] * (self._dimensions - len(row))
+
+    async def embed(self, texts):
+        import math
+
+        from app.core.http import httpx
+
+        texts = list(texts)
+        if not texts:
+            return []
+        async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
+            response = await client.post(
+                f"{self.base_url.rstrip('/')}/api/embed",
+                json={"model": self.model, "input": texts},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        vectors = payload.get("embeddings") or []
+        out = []
+        for row in vectors:
+            fitted = self._fit([float(x) for x in row])
+            norm = math.sqrt(sum(v * v for v in fitted)) or 1.0
+            out.append([v / norm for v in fitted])
+        return out
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
+
+    @property
+    def model_id(self) -> str:
+        return f"ollama:{self.model}"
 
 
 # ───────────────────────────── LLM ─────────────────────────────

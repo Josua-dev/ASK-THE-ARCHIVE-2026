@@ -14,9 +14,8 @@ dependencies = [
     "pgvector>=0.3.0",
     "argon2-cffi>=23.1.0",
     "PyJWT>=2.9.0",
-    "boto3>=1.34.0",
-    "botocore>=1.34.0",
     "fpdf2>=2.7.0",
+    "pymupdf>=1.24.0",
     "pdfplumber>=0.11.0",
     "pypdf>=4.3.0",
     "python-multipart>=0.0.12",
@@ -26,6 +25,8 @@ dependencies = [
     "striprtf>=0.0.26",
     "html2text>=2024.2.26",
     "openpyxl>=3.1.5",
+    "httpx>=0.27.0",
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]

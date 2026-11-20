@@ -5,17 +5,16 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, Response
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.errors import ForbiddenError, NotFoundError
+from app.core.security import verify_signed_link
 from app.db.models.document import Document
 from app.db.session import get_db_session
 from app.modules.documents import service
 from app.modules.documents.permissions import (
-    can_access_document,
     grant,
     list_permissions,
     revoke,
@@ -206,36 +205,29 @@ async def download(
     return DownloadOut(url=url, expires_in=expires)
 
 
-@router.get("/raw")
+@router.get("/raw/{document_id}")
 async def raw_object(
-    key: str = Query(min_length=1),
+    document_id: uuid.UUID,
+    token: str = Query(min_length=1),
     session: AsyncSession = Depends(get_db_session),
-    user=Depends(get_current_user),
 ):
     """Serve the stored original for the local storage backend.
 
-    The local adapter's "presigned URL" points back here because there is no
-    object store to sign against. The key is never trusted on its own: it is
-    resolved to a document and the caller's download permission is re-checked
-    before a single byte is returned.
+    The signed token is the credential. It is bound by its scope to this one
+    document, and it expires in minutes, so it cannot be replayed against a
+    different document or a different endpoint. The permission check that
+    authorised it happened when the link was minted, and that decision is
+    what the audit trail records.
     """
-    stmt = select(Document).where(Document.s3_key == key)
-    document = (await session.execute(stmt)).scalar_one_or_none()
+    if not verify_signed_link(token, f"download:{document_id}", settings.jwt_secret):
+        raise ForbiddenError("This download link is invalid or has expired")
+
+    document = await session.get(Document, document_id)
     if document is None:
         raise NotFoundError("Document not found")
-    if not await can_access_document(session, user, document.id, need="download"):
-        raise ForbiddenError("You do not have permission to download this document")
 
     storage = get_storage()
-    body = await storage.get_object(document.s3_key)
-    await record_audit(
-        session,
-        actor_id=user.id,
-        action="document.download",
-        resource_type="document",
-        resource_id=document.id,
-    )
-    await session.commit()
+    body = await storage.get_object(document.storage_key)
     return Response(
         content=body,
         media_type=document.content_type or "application/octet-stream",

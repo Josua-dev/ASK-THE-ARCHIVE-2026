@@ -1,4 +1,10 @@
-"""Storage protocol — S3 or local filesystem, selected by config."""
+"""Storage protocol — the local filesystem.
+
+There is no object store to sign against, so this port deliberately stops at
+bytes in and bytes out. Authorising a download is a separate concern handled
+by the signed-link helpers in `app.core.security`, which are scope-bound to a
+single document and expire quickly.
+"""
 
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -20,9 +26,9 @@ class StoragePort(ABC):
         """Return raw bytes for `key`."""
 
     @abstractmethod
-    async def generate_presigned_url(self, key: str, expires_in: int = 60) -> str:
-        """Return a short-lived URL the browser can fetch."""
-
-    @abstractmethod
     async def object_exists(self, key: str) -> bool:
         """Return True if the object exists."""
+
+    @abstractmethod
+    async def delete_object(self, key: str) -> None:
+        """Remove the object. Missing objects are not an error."""

@@ -73,7 +73,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_conversations_user_id'), 'conversations', ['user_id'], unique=False)
     op.create_table('documents',
     sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('s3_key', sa.Text(), nullable=False),
+    sa.Column('storage_key', sa.Text(), nullable=False),
     sa.Column('filename', sa.Text(), nullable=False),
     sa.Column('content_type', sa.Text(), nullable=False),
     sa.Column('byte_size', sa.BigInteger(), nullable=False),
@@ -90,7 +90,7 @@ def upgrade() -> None:
     sa.Column('indexed_at', sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['uploaded_by'], ['users.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('s3_key')
+    sa.UniqueConstraint('storage_key')
     )
     op.create_index(op.f('ix_documents_doc_type'), 'documents', ['doc_type'], unique=False)
     op.create_index(op.f('ix_documents_expiry_date'), 'documents', ['expiry_date'], unique=False)

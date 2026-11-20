@@ -1,25 +1,25 @@
-"""Resilient LLM: try Bedrock, degrade to the extractive adapter on throttling/access errors.
+"""Resilient LLM: try the primary provider, degrade to the extractive adapter.
 
-The fallback is never silent — LlmResponse.model records which engine answered,
-and the UI shows it, so a degraded answer is not passed off as a model answer.
+The fallback is never silent — `LlmResponse.model` records which engine
+answered, and the UI shows it, so a degraded answer is not passed off as a
+model answer.
+
+Any transport or provider error degrades to the extractive engine. A failure
+to reach the model is an infrastructure problem, not a semantic one, so the
+right response is to answer from the retrieved evidence rather than to return
+nothing.
 """
 
 import logging
-
-from botocore.exceptions import BotoCoreError, ClientError
 
 from app.ports.llm import LlmPort, LlmResponse
 
 log = logging.getLogger(__name__)
 
-_DEGRADE_CODES = {
-    "ThrottlingException", "ServiceUnavailableException", "ModelTimeoutException",
-    "AccessDeniedException", "ResourceNotFoundException", "ModelNotReadyException",
-    "TooManyRequestsException", "ValidationException",
-}
-
 
 class FallbackLlmAdapter(LlmPort):
+    """Runs `primary` and falls back to `fallback` when the primary fails."""
+
     def __init__(self, primary: LlmPort, fallback: LlmPort):
         self.primary = primary
         self.fallback = fallback
@@ -27,27 +27,42 @@ class FallbackLlmAdapter(LlmPort):
     async def generate(self, system_prompt, context, question, history=None) -> LlmResponse:
         try:
             return await self.primary.generate(system_prompt, context, question, history)
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            if code not in _DEGRADE_CODES:
-                raise
-            log.warning("Bedrock %s — falling back to extractive answer", code)
-        except BotoCoreError as e:
-            log.warning("Bedrock transport error (%s) — falling back", type(e).__name__)
+        except Exception as exc:  # noqa: BLE001 - any provider failure degrades
+            log.warning(
+                "LLM provider %s unavailable (%s) — falling back to extractive answer",
+                type(self.primary).__name__,
+                str(exc)[:200],
+            )
         resp = await self.fallback.generate(system_prompt, context, question, history)
         resp.model = "extractive-fallback"
         return resp
 
+    async def generate_stream(self, system_prompt, context, question, history=None):
+        try:
+            async for token in self.primary.generate_stream(
+                system_prompt, context, question, history
+            ):
+                yield token
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "LLM provider %s unavailable mid-stream (%s) — falling back",
+                type(self.primary).__name__,
+                str(exc)[:200],
+            )
+        resp = await self.fallback.generate(system_prompt, context, question, history)
+        resp.model = "extractive-fallback"
+        yield resp.text
+
     async def summarise(self, system_prompt, context, instruction=None) -> LlmResponse:
         try:
             return await self.primary.summarise(system_prompt, context, instruction)
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            if code not in _DEGRADE_CODES:
-                raise
-            log.warning("Bedrock %s — falling back to extractive summary", code)
-        except BotoCoreError as e:
-            log.warning("Bedrock transport error (%s) — falling back", type(e).__name__)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "LLM provider %s unavailable (%s) — falling back to extractive summary",
+                type(self.primary).__name__,
+                str(exc)[:200],
+            )
         resp = await self.fallback.summarise(system_prompt, context, instruction)
         resp.model = "extractive-fallback"
         return resp

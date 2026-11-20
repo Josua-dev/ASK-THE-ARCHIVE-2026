@@ -52,7 +52,7 @@ async def ingest_document(session: AsyncSession, document_id: uuid.UUID) -> None
 
         storage = get_storage()
         extractor = get_extractor()
-        raw = await storage.get_object(document.s3_key)
+        raw = await storage.get_object(document.storage_key)
         extraction = await extractor.extract(raw, document.filename, document.content_type)
 
         await _set_stage(session, job, "chunk", 30)

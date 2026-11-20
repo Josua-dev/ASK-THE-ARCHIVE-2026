@@ -17,7 +17,13 @@ logger = setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Ask the Archive starting — region=%s", settings.aws_region)
+    logger.info(
+        "Ask the Archive starting — storage=%s extractor=%s embedder=%s llm=%s",
+        settings.storage_impl,
+        settings.extractor_impl,
+        settings.embedder_impl,
+        settings.llm_impl,
+    )
     async with keepalive():
         yield
     await engine.dispose()
@@ -72,7 +78,12 @@ async def health():
             "storage": settings.storage_impl,
             "extractor": settings.extractor_impl,
             "embedder": settings.embedder_impl,
+            "embedder_model": settings.embedding_model_name,
             "llm": settings.llm_impl,
-            "bedrock_model": settings.bedrock_model_id,
+            "llm_model": (
+                settings.anthropic_model
+                if settings.llm_impl == "anthropic"
+                else settings.ollama_model
+            ),
         },
     }

@@ -22,7 +22,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    s3_key = Column(Text, unique=True, nullable=False)
+    # Provider-neutral key for the stored original. With the local filesystem
+    # backend this maps to `<storage_root>/<storage_key>`.
+    storage_key = Column(Text, unique=True, nullable=False)
     filename = Column(Text, nullable=False)
     content_type = Column(Text, nullable=False)
     byte_size = Column(BigInteger, nullable=False)
