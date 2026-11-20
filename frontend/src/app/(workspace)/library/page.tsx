@@ -164,10 +164,32 @@ export default function LibraryPage() {
 }
 
 function DocCard({ doc }: { doc: ArchiveDocument }) {
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDownload(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDownloading(true);
+    setError(null);
+    try {
+      await api.downloadBlob(doc.id, doc.filename);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : "Download failed. Check your permissions.";
+      setError(msg);
+      setTimeout(() => setError(null), 4000);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <Link
       href={`/library/${doc.id}`}
-      className="panel group flex flex-col p-4 shadow-panel transition-all hover:-translate-y-0.5 hover:shadow-lift"
+      className="panel group relative flex flex-col p-4 shadow-panel transition-all hover:-translate-y-0.5 hover:shadow-lift"
     >
       <div className="flex items-start justify-between gap-3">
         <DocTypeChip type={doc.doc_type} />
@@ -191,6 +213,39 @@ function DocCard({ doc }: { doc: ArchiveDocument }) {
             {doc.page_count ?? "—"}
           </p>
         </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <button
+          onClick={handleDownload}
+          disabled={downloading}
+          className="inline-flex items-center gap-1.5 rounded-md bg-charcoal/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-charcoal/70 transition-colors hover:bg-copper/10 hover:text-copper disabled:opacity-50"
+        >
+          {downloading ? (
+            <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-charcoal/30 border-t-copper" />
+          ) : (
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-3 w-3"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          )}
+          {downloading ? "Downloading…" : "Download"}
+        </button>
+        {error && (
+          <span className="text-[10px] text-[#B3261E]" title={error}>
+            {error}
+          </span>
+        )}
       </div>
     </Link>
   );

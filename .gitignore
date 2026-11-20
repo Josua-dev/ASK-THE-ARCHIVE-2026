@@ -21,3 +21,13 @@ frontend/.env*
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Runtime artifacts — never commit
+backend/*.log
+backend/*.err.log
+backend/*token*.txt
+backend/login.json
+backend/ask_resp.json
+backend/uv8000*
+backend/uploads/
+frontend/tsconfig.tsbuildinfo

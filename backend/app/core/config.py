@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     embedder_impl: str = "bge-m3"  # "titan-v2" once Bedrock embedding quota is available
     llm_impl: str = "bedrock-converse"
 
+    # Cognito (user-pool-based authentication; set these env vars to enable)
+    cognito_region: str = ""
+    cognito_user_pool_id: str = ""
+    cognito_app_client_id: str = ""
+
     # RAG / retrieval tuning
     min_score: float = 0.30
     top_k: int = 6

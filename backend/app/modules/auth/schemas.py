@@ -54,3 +54,8 @@ class UserOut(BaseModel):
             is_active=user.is_active,
             created_at=user.created_at.isoformat() if user.created_at else "",
         )
+
+
+class CognitoLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
