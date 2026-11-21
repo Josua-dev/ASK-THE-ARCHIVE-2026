@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Ask the Archive">
+  <!-- Archive box: deep charcoal, the brand's primary ink. -->
+  <rect x="3" y="9" width="26" height="18" rx="2.5" fill="#171A1D"/>
+  <!-- The lid. -->
+  <rect x="2" y="4" width="28" height="6" rx="2" fill="#171A1D"/>
+  <!-- The label slot. -->
+  <rect x="12.5" y="13.5" width="7" height="5" rx="1" fill="#F3F1EC"/>
+  <!-- The query: a copper search node and its stem, drawn from the slot. -->
+  <circle cx="19" cy="22.5" r="3.2" fill="none" stroke="#B9784B" stroke-width="2.2"/>
+  <path d="M21.4 25 L25 28.6" stroke="#B9784B" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

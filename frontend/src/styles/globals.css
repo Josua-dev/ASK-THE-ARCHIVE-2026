@@ -2,26 +2,105 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Design tokens.
+ *
+ * Values are stored as bare HSL channels so Tailwind's `<alpha-value>`
+ * placeholder can compose them (`bg-accent/12`). Light is the default;
+ * `.dark` on <html> swaps the whole set, which means no component needs to
+ * know which theme is active.
+ *
+ * The brand is an engineering practice: Deep Charcoal for primary text and
+ * strong elements, Concrete White for the page, Steel Grey for secondary
+ * text, Warm Copper for emphasis and calls to action.
+ */
 :root {
-  --charcoal: #171a1d;
-  --concrete: #f3f1ec;
-  --steel: #8a9095;
-  --copper: #b9784b;
-  --aws: #ff9900;
-  --paper: #ffffff;
+  --background: 43 22.5% 93.9%; /* concrete */
+  --foreground: 210 11.5% 10.2%; /* charcoal */
+  --surface: 0 0% 100%; /* paper */
+  --surface-muted: 40 14% 90%;
+  --muted: 40 12% 88%;
+  --muted-foreground: 207 4.9% 56.3%; /* steel */
+  --border: 210 11.5% 10.2%;
+  --input: 210 11.5% 10.2%;
+  --ring: 24.5 44% 51%; /* copper */
+  --primary: 210 11.5% 10.2%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 24.5 44% 51%;
+  --accent-foreground: 0 0% 100%;
+  --success: 152 38% 30%;
+  --warning: 38 88% 36%;
+  --danger: 2 72% 42%;
+
+  --radius: 0.625rem;
+
+  /* Typography stacks. `next/font` overrides these on <html> once the font
+     files are self-hosted; the fallbacks keep the app legible offline. */
+  --font-inter: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui,
+    -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+}
+
+.dark {
+  --background: 210 10% 7%;
+  --foreground: 200 8% 92%;
+  --surface: 207 11% 11%;
+  --surface-muted: 207 11% 15%;
+  --muted: 207 11% 18%;
+  --muted-foreground: 205 8% 62%;
+  --border: 200 8% 92%;
+  --input: 200 8% 92%;
+  --ring: 24.5 50% 60%;
+  --primary: 200 8% 92%;
+  --primary-foreground: 210 10% 7%;
+  --accent: 24.5 50% 58%;
+  --accent-foreground: 210 10% 7%;
+  --success: 152 40% 50%;
+  --warning: 40 85% 62%;
+  --danger: 2 72% 62%;
 }
 
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
   }
+
   body {
-    background: var(--concrete);
-    color: var(--charcoal);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+
   ::selection {
-    background: rgba(185, 120, 75, 0.22);
+    background: hsl(var(--accent) / 0.24);
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Scrollbars that read as part of the interface rather than the OS. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--foreground) / 0.22) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--foreground) / 0.18);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--foreground) / 0.32);
+    background-clip: content-box;
   }
 }
 
@@ -29,31 +108,35 @@
   /* Fine engineering-grid backdrop: subtle, technical, never noisy. */
   .grid-field {
     background-image:
-      linear-gradient(to right, rgba(23, 26, 29, 0.045) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(23, 26, 29, 0.045) 1px, transparent 1px);
+      linear-gradient(to right, hsl(var(--foreground) / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--foreground) / 0.045) 1px, transparent 1px);
     background-size: 28px 28px;
   }
+
   .rule {
     height: 1px;
     background: linear-gradient(
       to right,
-      rgba(23, 26, 29, 0),
-      rgba(23, 26, 29, 0.14),
-      rgba(23, 26, 29, 0)
+      hsl(var(--foreground) / 0),
+      hsl(var(--foreground) / 0.14),
+      hsl(var(--foreground) / 0)
     );
   }
+
   .panel {
-    background: var(--paper);
-    border: 1px solid rgba(23, 26, 29, 0.09);
-    border-radius: 14px;
+    background: hsl(var(--surface));
+    border: 1px solid hsl(var(--foreground) / 0.09);
+    border-radius: var(--radius);
   }
+
   .label {
     font-size: 10px;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--steel);
+    color: hsl(var(--muted-foreground));
     font-weight: 600;
   }
+
   .btn {
     display: inline-flex;
     align-items: center;
@@ -63,7 +146,12 @@
     font-size: 13px;
     font-weight: 600;
     padding: 9px 16px;
-    transition: all 140ms ease;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      transform 140ms ease,
+      box-shadow 140ms ease;
     cursor: pointer;
     border: 1px solid transparent;
     white-space: nowrap;
@@ -73,44 +161,51 @@
     cursor: not-allowed;
   }
   .btn-primary {
-    background: var(--charcoal);
-    color: var(--paper);
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
   }
   .btn-primary:hover:not(:disabled) {
-    background: #000;
+    background: hsl(var(--foreground) / 0.86);
     transform: translateY(-1px);
   }
   .btn-accent {
-    background: var(--copper);
-    color: #fff;
+    background: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
   }
   .btn-accent:hover:not(:disabled) {
-    background: #a5653c;
+    background: hsl(var(--accent) / 0.88);
     transform: translateY(-1px);
   }
   .btn-ghost {
-    border-color: rgba(23, 26, 29, 0.14);
-    color: var(--charcoal);
+    border-color: hsl(var(--foreground) / 0.14);
+    color: hsl(var(--foreground));
     background: transparent;
   }
   .btn-ghost:hover:not(:disabled) {
-    background: rgba(23, 26, 29, 0.04);
+    background: hsl(var(--foreground) / 0.05);
   }
+
   .input {
     width: 100%;
-    border: 1px solid rgba(23, 26, 29, 0.14);
+    border: 1px solid hsl(var(--foreground) / 0.14);
     border-radius: 10px;
     padding: 10px 12px;
     font-size: 14px;
-    background: #fff;
-    color: var(--charcoal);
+    background: hsl(var(--surface));
+    color: hsl(var(--foreground));
     outline: none;
-    transition: border-color 140ms ease, box-shadow 140ms ease;
+    transition:
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+  .input::placeholder {
+    color: hsl(var(--muted-foreground));
   }
   .input:focus {
-    border-color: var(--copper);
-    box-shadow: 0 0 0 3px rgba(185, 120, 75, 0.14);
+    border-color: hsl(var(--accent));
+    box-shadow: 0 0 0 3px hsl(var(--accent) / 0.14);
   }
+
   .chip {
     display: inline-flex;
     align-items: center;
@@ -121,15 +216,66 @@
     font-weight: 600;
     letter-spacing: 0.02em;
   }
+
   .skeleton {
     background: linear-gradient(
       90deg,
-      rgba(23, 26, 29, 0.06) 25%,
-      rgba(23, 26, 29, 0.11) 50%,
-      rgba(23, 26, 29, 0.06) 75%
+      hsl(var(--foreground) / 0.06) 25%,
+      hsl(var(--foreground) / 0.11) 50%,
+      hsl(var(--foreground) / 0.06) 75%
     );
     background-size: 200% 100%;
     animation: shimmer 1.6s linear infinite;
+  }
+
+  /* Data tables: the header is quiet, the rows carry the information. */
+  .data-table {
+    width: 100%;
+    text-align: left;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .data-table thead th {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    font-weight: 600;
+    padding: 10px 16px;
+    background: hsl(var(--foreground) / 0.025);
+    border-bottom: 1px solid hsl(var(--foreground) / 0.1);
+    white-space: nowrap;
+  }
+  .data-table tbody td {
+    padding: 11px 16px;
+    border-bottom: 1px solid hsl(var(--foreground) / 0.06);
+    vertical-align: middle;
+  }
+  .data-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+  .data-table tbody tr {
+    transition: background-color 120ms ease;
+  }
+  .data-table tbody tr:hover {
+    background: hsl(var(--foreground) / 0.025);
+  }
+
+  /* Keyboard hint, used by the command palette and shortcuts. */
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 5px;
+    border: 1px solid hsl(var(--foreground) / 0.14);
+    background: hsl(var(--foreground) / 0.04);
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: hsl(var(--muted-foreground));
   }
 }
 
@@ -138,6 +284,8 @@
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

@@ -8,7 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { api, clearTokens, setAccessToken, tryRefresh } from "./api";
+import { api, clearTokens, tryRefresh } from "./api";
 import type { User } from "./types";
 
 interface AuthState {
@@ -21,11 +21,16 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/**
+ * Authentication is entirely local: the backend verifies an Argon2id hash and
+ * issues an HS256 access token plus a rotating refresh token. There is no
+ * external identity provider, so there is nothing to synchronise on boot —
+ * only the refresh token needs exchanging for a session.
+ */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On boot: try to exchange the stored refresh token for a fresh session.
   useEffect(() => {
     let cancelled = false;
     (async () => {

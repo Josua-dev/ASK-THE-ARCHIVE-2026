@@ -1,9 +1,9 @@
 """End-to-end validation of the five live demo tests.
 
-Runs the real ASGI application against the real database and the real Bedrock
-model, as each of the three seeded users, and asserts the five behaviours the
-brief calls for. Nothing is stubbed: the answers come from the same code path
-the browser uses.
+Runs the real ASGI application against the real database and the real local
+model (Ollama), as each of the three seeded users, and asserts the five
+behaviours the brief calls for. Nothing is stubbed: the answers come from the
+same code path the browser uses.
 
     ./.venv/Scripts/python -m scripts.validate_demo
 """
@@ -158,26 +158,45 @@ async def main():
         q = "What are the security and data protection obligations?"
         a_analyst = await ask(client, analyst, q)
         a_viewer = await ask(client, viewer, q)
-        a_admin = await ask(client, admin, q)
 
         def names(ans):
             return {c["filename"] for c in ans["citations"]}
 
-        r.check("admin sees the NDA (admin-only document)",
-                any("nda" in n for n in names(a_admin)),
-                str(sorted(names(a_admin))))
-        r.check("analyst does NOT see the NDA",
-                not any("nda" in n for n in names(a_analyst)),
-                str(sorted(names(a_analyst))))
-        r.check("viewer does NOT see the NDA",
-                not any("nda" in n for n in names(a_viewer)),
-                str(sorted(names(a_viewer))))
         r.check("analyst and viewer citations differ",
                 names(a_analyst) != names(a_viewer),
                 f"analyst={sorted(names(a_analyst))} viewer={sorted(names(a_viewer))}")
         r.check("viewer cannot reach the analyst-only warehouse lease",
                 not any("northgate" in n for n in names(a_viewer)),
                 str(sorted(names(a_viewer))))
+
+        # The NDA is admin-only, so a broad question may legitimately be
+        # answered from the two policies without touching it. A model that
+        # cites only the passages it actually drew on is behaving correctly —
+        # asserting on which of the retrieved documents it happened to mark
+        # would be asserting on the model, not on the product.
+        #
+        # To prove the restricted document is genuinely reachable *and*
+        # citable, the question has to be one that only the NDA can answer:
+        # "Aurora Biotech Ltd" appears in no other seeded document. Then the
+        # admin's citation set is deterministic, and the analyst's and the
+        # viewer's must be empty of it.
+        q_nda = (
+            "Under the mutual non-disclosure agreement with Aurora Biotech Ltd, "
+            "what must the recipient keep secret and when does the agreement expire?"
+        )
+        a_admin_nda = await ask(client, admin, q_nda)
+        a_analyst_nda = await ask(client, analyst, q_nda)
+        a_viewer_nda = await ask(client, viewer, q_nda)
+
+        r.check("admin sees the NDA (admin-only document)",
+                any("nda" in n for n in names(a_admin_nda)),
+                str(sorted(names(a_admin_nda))))
+        r.check("analyst does NOT see the NDA",
+                not any("nda" in n for n in names(a_analyst_nda)),
+                str(sorted(names(a_analyst_nda))))
+        r.check("viewer does NOT see the NDA",
+                not any("nda" in n for n in names(a_viewer_nda)),
+                str(sorted(names(a_viewer_nda))))
 
         # Direct API check: the viewer is refused the NDA outright.
         nda = next((d for d in docs if "nda" in d["filename"]), None)

@@ -1,0 +1,22 @@
+# The image installs its own dependencies. Copying the host's node_modules
+# would put a Windows build (and whatever version the developer happened to
+# have) on top of the Linux one the deps stage installed.
+node_modules
+.next
+out
+
+# Local environment files. The container gets its configuration from compose.
+.env
+.env.local
+.env.*.local
+
+# Editor and OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Build and typecheck artefacts
+tsconfig.tsbuildinfo
+npm-debug.log*
+yarn-error.log*

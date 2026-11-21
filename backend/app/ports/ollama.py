@@ -14,17 +14,11 @@ timeout/streaming behaviour explicit.
 """
 
 import json
-import re
 from typing import AsyncIterator, Dict, List, Optional
 
 from app.core.http import httpx
-from app.ports.llm import NO_ANSWER, LlmPort, LlmResponse
-
-# The answer is expected to carry inline [n] markers that point at the
-# numbered context passages. Any model can drift from that contract, so the
-# markers are validated and the answer is rejected when it cites a passage
-# that was not supplied.
-_CITATION_MARKER = re.compile(r"\[(\d+)\]")
+from app.ports.llm import DEFAULT_SUMMARISE_INSTRUCTION, NO_ANSWER, LlmPort, LlmResponse
+from app.shared.citations import extract_inline_citations
 
 
 class OllamaUnavailableError(RuntimeError):
@@ -205,7 +199,7 @@ class OllamaLlmAdapter(LlmPort):
         self,
         system_prompt: str,
         context: str,
-        instruction: str = "Summarise this section in three sentences or fewer.",
+        instruction: str = DEFAULT_SUMMARISE_INSTRUCTION,
     ) -> LlmResponse:
         payload = {
             "model": self.model,
@@ -262,11 +256,9 @@ class OllamaEmbedderAdapter:
 
 
 def _extract_citations(text: str) -> List[int]:
-    """Collect the passage indices the model cited, in ascending order."""
-    seen = set()
-    for match in _CITATION_MARKER.finditer(text):
-        try:
-            seen.add(int(match.group(1)))
-        except ValueError:
-            continue
-    return sorted(seen)
+    """Collect the passage indices the model cited, in ascending order.
+
+    The markers are validated by the caller against the passages that were
+    actually supplied, so a marker can only point at a passage the model saw.
+    """
+    return extract_inline_citations(text)

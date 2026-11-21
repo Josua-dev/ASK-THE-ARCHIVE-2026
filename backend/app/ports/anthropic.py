@@ -19,9 +19,13 @@ import json
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from app.ports.llm import NO_ANSWER, LlmPort, LlmResponse
-
-_CITATION_MARKER = re.compile(r"\[(\d+)\]")
+from app.ports.llm import (
+    DEFAULT_SUMMARISE_INSTRUCTION,
+    NO_ANSWER,
+    LlmPort,
+    LlmResponse,
+)
+from app.shared.citations import extract_inline_citations
 
 # The beta that enables the server-side fallback router on the Claude API.
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -180,7 +184,7 @@ class AnthropicLlmAdapter(LlmPort):
         self,
         system_prompt: str,
         context: str,
-        instruction: str = "Summarise this section in three sentences or fewer.",
+        instruction: str = DEFAULT_SUMMARISE_INSTRUCTION,
     ) -> LlmResponse:
         client = self._get_client()
         kwargs = self._request_kwargs()
@@ -198,10 +202,5 @@ class AnthropicLlmAdapter(LlmPort):
 
 
 def _extract_citations(text: str) -> List[int]:
-    seen = set()
-    for match in _CITATION_MARKER.finditer(text):
-        try:
-            seen.add(int(match.group(1)))
-        except ValueError:
-            continue
-    return sorted(seen)
+    """Collect the passage indices the model cited, in ascending order."""
+    return extract_inline_citations(text)

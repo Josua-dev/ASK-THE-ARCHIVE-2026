@@ -15,6 +15,14 @@ from typing import AsyncIterator, Dict, List, Optional
 
 NO_ANSWER = "NO_ANSWER"
 
+# The instruction a summarisation uses when the caller does not supply one.
+#
+# It lives here rather than as a default argument on each adapter so that a
+# wrapper cannot accidentally replace it with `None`. A wrapper that forwards
+# `None` puts the literal string "None" at the end of the prompt, and the
+# model answers that with a bare "-" instead of a summary.
+DEFAULT_SUMMARISE_INSTRUCTION = "Summarise this section in three sentences or fewer."
+
 
 @dataclass
 class LlmResponse:
@@ -48,7 +56,7 @@ class LlmPort(ABC):
         yield response.text
 
     async def summarise(
-        self, system_prompt: str, context: str, instruction: str = "Summarise this section in three sentences or fewer."
+        self, system_prompt: str, context: str, instruction: str = DEFAULT_SUMMARISE_INSTRUCTION
     ) -> LlmResponse:
         """Summarise a passage of text (not a Q&A exchange).
 

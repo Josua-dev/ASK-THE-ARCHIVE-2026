@@ -1,7 +1,7 @@
 /**
  * API client.
  *
- * The browser never holds AWS credentials, database URLs or any other secret —
+ * The browser never holds database URLs, model endpoints or any other secret —
  * it only ever talks to our own backend through the Next.js rewrite proxy.
  *
  * The access token is short-lived and kept in memory only. The refresh token
@@ -15,15 +15,38 @@ import type {
   AdminStats,
   Answer,
   ArchiveDocument,
+  ArchiveInsight,
   AuditEntry,
+  CheckinResponse,
+  CheckoutResponse,
+  ComparisonListItem,
+  ComparisonListOut,
   Conversation,
+  ConversationAccess,
+  DocumentComparison,
   DocumentList,
+  DocumentProfile,
+  DocumentLocation,
+  EntityDetail,
+  ExtractionListItem,
+  ExtractionListOut,
+  ExtractionRun,
+  GraphResponse,
+  InsightListOut,
   Permission,
+  ProfileEntry,
+  ResearchListOut,
+  ResearchReport,
+  ResearchReportSummary,
   Role,
   SearchResult,
+  Share,
+  ShareListOut,
+  SharedConversation,
   StoredMessage,
   Summary,
   User,
+  WarehouseLayout,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/v1";
@@ -126,6 +149,36 @@ export async function tryRefresh(): Promise<boolean> {
   return refreshing;
 }
 
+/** Build a query string, dropping empty values so the backend sees clean params. */
+export function qs(params: Record<string, string | number | boolean | null | undefined>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === "") continue;
+    search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+/**
+ * A type alias rather than an interface, so it keeps the implicit index
+ * signature that `qs` expects when it is spread into a query string.
+ */
+export type DocumentQuery = {
+  doc_type?: string;
+  status?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export interface ShareUser {
+  id: string;
+  display_name: string;
+  email: string;
+  role: Role;
+}
+
 export const api = {
   health: () => rawRequest<Record<string, unknown>>("/health"),
 
@@ -150,6 +203,8 @@ export const api = {
 
   me: () => rawRequest<User>("/auth/me"),
 
+  /* --------------------------------------------------------------- chat */
+
   ask: (question: string, conversationId?: string | null) =>
     rawRequest<Answer>("/chat/ask", {
       method: "POST",
@@ -161,7 +216,10 @@ export const api = {
   messages: (id: string) =>
     rawRequest<StoredMessage[]>(`/chat/conversations/${id}/messages`),
 
-  documents: () => rawRequest<DocumentList>("/documents"),
+  /* ----------------------------------------------------------- documents */
+
+  documents: (query: DocumentQuery = {}) =>
+    rawRequest<DocumentList>(`/documents${qs(query)}`),
 
   document: (id: string) => rawRequest<ArchiveDocument>(`/documents/${id}`),
 
@@ -184,16 +242,16 @@ export const api = {
     rawRequest<{ url: string; expires_in: number }>(`/documents/${id}/download`),
 
   /**
-   * Download the original. The backend's download URL is permission-checked
-   * and protected by the bearer token, so it is fetched with the header
-   * rather than handed to the browser as a plain navigation — otherwise the
-   * request would arrive unauthenticated and be refused.
+   * Download the original file.
+   *
+   * The backend returns a short-lived signed link scoped to this document.
+   * The link already carries its own authority in the `token` query string,
+   * so it must be fetched WITHOUT an Authorization header — sending a
+   * second credential makes the request ambiguous and the backend refuses it.
    */
   downloadBlob: async (id: string, filename: string) => {
     const { url } = await api.download(id);
-    const res = await fetch(url, {
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-    });
+    const res = await fetch(url);
     if (!res.ok) throw new ApiError(res.status, await parseError(res));
     const blob = await res.blob();
     const objectUrl = URL.createObjectURL(blob);
@@ -214,6 +272,59 @@ export const api = {
 
   deleteDocument: (id: string) =>
     rawRequest<void>(`/documents/${id}`, { method: "DELETE" }),
+
+  /* ----------------------------------------------------------- warehouse */
+
+  /** Where a document physically sits in the archive. */
+  location: (id: string) =>
+    rawRequest<DocumentLocation>(`/documents/${id}/location`),
+
+  /**
+   * Assign or clear a document's slot.
+   *
+   * All four parts are sent, or all four are null to clear the location. The
+   * backend refuses a partial tuple, an unknown value and an occupied slot.
+   */
+  setLocation: (
+    id: string,
+    body: {
+      zone: string | null;
+      rack: string | null;
+      shelf: string | null;
+      box: string | null;
+    },
+  ) =>
+    rawRequest<DocumentLocation>(`/documents/${id}/location`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  /** Put the document in the first free slot. */
+  autoLocation: (id: string) =>
+    rawRequest<DocumentLocation>(`/documents/${id}/location/auto`, {
+      method: "POST",
+    }),
+
+  /**
+   * The warehouse vocabulary and the occupied slots the caller may read.
+   *
+   * The vocabulary comes from the backend so the two can never drift; the
+   * frontend never hardcodes zone, rack, shelf or box names.
+   */
+  warehouseLayout: () => rawRequest<WarehouseLayout>("/warehouse/layout"),
+
+  /** Physically check a document out of the archive. */
+  checkout: (id: string, body: {due_at?: string }) =>
+    rawRequest<CheckoutResponse>(`/documents/${id}/checkout`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Return a checked-out document to the archive. */
+  checkin: (id: string) =>
+    rawRequest<CheckinResponse>(`/documents/${id}/checkin`, {
+      method: "POST",
+    }),
 
   permissions: (id: string) =>
     rawRequest<Permission[]>(`/documents/${id}/permissions`),
@@ -251,12 +362,110 @@ export const api = {
   createSummary: (id: string) =>
     rawRequest<Summary>(`/summaries/${id}`, { method: "POST" }),
 
-  search: (q: string, topK = 10) =>
+  /* ------------------------------------------------------------- search */
+
+  search: (q: string, topK = 10, docType?: string | null) =>
     rawRequest<SearchResult>(
-      `/search?q=${encodeURIComponent(q)}&top_k=${topK}`,
+      `/search${qs({ q, top_k: topK, doc_type: docType ?? undefined })}`,
     ),
 
-  adminUsers: () => rawRequest<{ items: User[]; total: number }>("/admin/users"),
+  /* ----------------------------------------------------------- profiles */
+
+  profile: (documentId: string) =>
+    rawRequest<DocumentProfile>(`/profiles/${documentId}`),
+
+  createProfile: (documentId: string) =>
+    rawRequest<DocumentProfile>(`/profiles/${documentId}`, { method: "POST" }),
+
+  /* ------------------------------------------------------------ compare */
+
+  compare: (body: {
+    document_a_id: string;
+    document_b_id: string;
+    instruction?: string | null;
+  }) =>
+    rawRequest<DocumentComparison>("/compare", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  comparisons: (limit = 25, offset = 0) =>
+    rawRequest<ComparisonListOut>(`/compare${qs({ limit, offset })}`),
+
+  comparison: (id: string) =>
+    rawRequest<DocumentComparison>(`/compare/${id}`),
+
+  /* ----------------------------------------------------------- research */
+
+  research: (body: {
+    question: string;
+    conversation_id?: string | null;
+    instruction?: string | null;
+  }) =>
+    rawRequest<ResearchReport>("/research", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  researchReports: (limit = 25, offset = 0) =>
+    rawRequest<ResearchListOut>(`/research${qs({ limit, offset })}`),
+
+  researchReport: (id: string) =>
+    rawRequest<ResearchReport>(`/research/${id}`),
+
+  /* -------------------------------------------------------------- graph */
+
+  graph: (query: {
+    doc_type?: string | null;
+    kind?: string | null;
+    min_weight?: number | null;
+    max_nodes?: number | null;
+  } = {}) => rawRequest<GraphResponse>(`/graph${qs(query)}`),
+
+  entity: (entityId: string) =>
+    rawRequest<EntityDetail>(`/graph/entities/${entityId}`),
+
+  /* ---------------------------------------------------------- extraction */
+
+  createExtraction: (body: {
+    instruction: string;
+    document_ids: string[];
+    columns: { key: string; label: string; type: string }[];
+    max_rows?: number | null;
+  }) =>
+    rawRequest<ExtractionRun>("/extractions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  extractions: (limit = 25, offset = 0) =>
+    rawRequest<ExtractionListOut>(`/extractions${qs({ limit, offset })}`),
+
+  extraction: (runId: string) =>
+    rawRequest<ExtractionRun>(`/extractions/${runId}`),
+
+  /* ----------------------------------------------------------- insights */
+
+  insights: (query: { status?: string | null; kind?: string | null; limit?: number } = {}) =>
+    rawRequest<InsightListOut>(`/insights${qs(query)}`),
+
+  scanInsights: () =>
+    rawRequest<InsightListOut>("/insights/scan", { method: "POST" }),
+
+  updateInsight: (id: string, status: string) =>
+    rawRequest<ArchiveInsight>(`/insights/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
+  /* ----------------------------------------------------------- analytics */
+
+  analytics: () => rawRequest<import("./types").Analytics>("/analytics"),
+
+  /* --------------------------------------------------------------- admin */
+
+  adminUsers: () =>
+    rawRequest<{ items: User[]; total: number }>("/admin/users"),
 
   adminCreateUser: (body: {
     email: string;
@@ -286,9 +495,32 @@ export const api = {
   adminDeleteUser: (id: string) =>
     rawRequest<void>(`/admin/users/${id}`, { method: "DELETE" }),
 
-  adminAudit: () => rawRequest<AuditEntry[]>("/admin/audit"),
+  adminAudit: (limit = 100, action?: string | null) =>
+    rawRequest<AuditEntry[]>(`/admin/audit${qs({ limit, action: action ?? undefined })}`),
 
   adminStats: () => rawRequest<AdminStats>("/admin/stats"),
+
+  /* ------------------------------------------------------------- sharing */
+
+  sharedWithMe: () =>
+    rawRequest<SharedConversation[]>("/conversations/shared-with-me"),
+
+  shareableUsers: () => rawRequest<ShareUser[]>("/conversations/users"),
+
+  conversationAccess: (id: string) =>
+    rawRequest<ConversationAccess>(`/conversations/${id}/access`),
+
+  conversationShares: (id: string) =>
+    rawRequest<ShareListOut>(`/conversations/${id}/shares`),
+
+  shareConversation: (id: string, body: { shared_with_user_id: string; permission: string }) =>
+    rawRequest<Share>(`/conversations/${id}/shares`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  revokeShare: (id: string, userId: string) =>
+    rawRequest<void>(`/conversations/${id}/shares/${userId}`, { method: "DELETE" }),
 };
 
 export interface StreamHandlers {
@@ -307,6 +539,7 @@ export interface StreamHandlers {
 export async function streamAnswer(
   question: string,
   handlers: StreamHandlers,
+  conversationId?: string | null,
 ): Promise<void> {
   const res = await fetch(`${BASE}/chat/stream`, {
     method: "POST",
@@ -314,7 +547,10 @@ export async function streamAnswer(
       "Content-Type": "application/json",
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
-    body: JSON.stringify({ question, conversation_id: null }),
+    body: JSON.stringify({
+      question,
+      conversation_id: conversationId ?? null,
+    }),
   });
 
   if (!res.ok || !res.body) {
@@ -370,3 +606,18 @@ export async function streamAnswer(
   }
   if (buffer.trim()) dispatch(buffer);
 }
+
+export type {
+  ComparisonListItem,
+  DocumentComparison,
+  DocumentProfile,
+  EntityDetail,
+  ExtractionListItem,
+  ExtractionRun,
+  GraphResponse,
+  InsightListOut,
+  ProfileEntry,
+  ResearchListOut,
+  ResearchReport,
+  ResearchReportSummary,
+};

@@ -12,7 +12,7 @@ nothing.
 
 import logging
 
-from app.ports.llm import LlmPort, LlmResponse
+from app.ports.llm import DEFAULT_SUMMARISE_INSTRUCTION, LlmPort, LlmResponse
 
 log = logging.getLogger(__name__)
 
@@ -55,14 +55,21 @@ class FallbackLlmAdapter(LlmPort):
         yield resp.text
 
     async def summarise(self, system_prompt, context, instruction=None) -> LlmResponse:
+        # The instruction must survive the hop through this wrapper. Forwarding
+        # `None` would put the literal string "None" at the end of the prompt
+        # — the model reads that as a malformed request and replies with a
+        # bare "-" rather than a summary.
+        resolved = (
+            instruction if instruction is not None else DEFAULT_SUMMARISE_INSTRUCTION
+        )
         try:
-            return await self.primary.summarise(system_prompt, context, instruction)
+            return await self.primary.summarise(system_prompt, context, resolved)
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "LLM provider %s unavailable (%s) — falling back to extractive summary",
                 type(self.primary).__name__,
                 str(exc)[:200],
             )
-        resp = await self.fallback.summarise(system_prompt, context, instruction)
+        resp = await self.fallback.summarise(system_prompt, context, resolved)
         resp.model = "extractive-fallback"
         return resp

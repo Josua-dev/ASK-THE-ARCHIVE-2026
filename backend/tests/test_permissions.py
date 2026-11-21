@@ -33,9 +33,14 @@ pytestmark = pytest.mark.asyncio
 
 
 async def make_user(email: str, role: str) -> User:
+    # The local part carries a unique suffix so a run that is interrupted
+    # between the insert and the cleanup cannot orphan the row and break the
+    # next run with a duplicate-email error.
+    local, _, domain = email.partition("@")
+    unique_email = f"{local}-{uuid.uuid4().hex[:8]}@{domain}"
     user = User(
         id=uuid.uuid4(),
-        email=email,
+        email=unique_email,
         display_name=email.split("@")[0],
         role=role,
         password_hash="x",
@@ -50,7 +55,7 @@ async def make_user(email: str, role: str) -> User:
 async def make_document(owner: User, filename: str, doc_type: str = "lease") -> Document:
     doc = Document(
         id=uuid.uuid4(),
-        s3_key=f"documents/{uuid.uuid4()}/{filename}",
+        storage_key=f"documents/{uuid.uuid4()}/{filename}",
         filename=filename,
         content_type="application/pdf",
         byte_size=10,

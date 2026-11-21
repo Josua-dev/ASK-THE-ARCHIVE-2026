@@ -23,22 +23,31 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.errors import ForbiddenError, NotFoundError
 from app.db.models.citation import Citation
 from app.db.models.conversation import Conversation
 from app.db.models.document import Document
 from app.db.models.evidence import RetrievalEvidence
 from app.db.models.message import Message
 from app.db.models.user import User
+from app.modules.conversation_share.service import (
+    ACCESS_NONE,
+    can_contribute,
+    resolve_conversation_access,
+)
 from app.modules.documents.permissions import permission_filter
 from app.modules.retrieval.service import RetrievedChunk, search, keyword_search
 from app.ports.factory import get_embedder, get_llm
 from app.shared.audit import record_audit
+from app.shared.citations import extract_inline_citations
 
 SYSTEM_PROMPT = (
     "You are the archive assistant for an enterprise document repository. "
     "Answer strictly from the numbered context passages provided. "
     "If the context does not contain the answer, say you do not know — never guess. "
-    "Reference supporting passages inline with [n] markers."
+    "Cite each supporting passage by writing its number in square brackets "
+    "immediately after the claim it supports — for example, [1]. "
+    "Never write a citation number that is not in the passages you were given."
 )
 
 ABSTENTION_TEXT = (
@@ -200,8 +209,8 @@ async def answer_metadata_query(
 # ─────────────────────── Greeting questions ───────────────────────
 
 _GREETING_PATTERN = re.compile(
-    r"\b(hello|hi|hey|good\s+(morning|afternoon|evening)|how.?are.?you|thanks|thank.?you|bye|"
-    r"what.?can.?you.?do|who.?are.?you|help|hey.?there)\b",
+    r"^\s*(hello|hi|hey|good\s+(morning|afternoon|evening)|how\s+are\s+you|thanks|thank\s+you|bye|"
+    r"what\s+can\s+you\s+do|who\s+are\s+you|help|hey\s+there)\s*[.!?]*\s*$",
     re.I,
 )
 
@@ -340,8 +349,14 @@ def build_context(chunks: list[RetrievedChunk]) -> str:
     return "\n\n---\n\n".join(chunk.as_context(i) for i, chunk in enumerate(chunks, start=1))
 
 
-def _extract_citation_indices(text: str) -> list[int]:
-    return [int(m) for m in re.findall(r"\[(\d{1,2})\]", text)]
+def _extract_citation_indices(text: str, *, max_index: Optional[int] = None) -> list[int]:
+    """The passage indices the model cited inline in its answer.
+
+    Each index is checked against the passages that were actually retrieved
+    before it becomes a citation, so this can only ever surface a passage the
+    model was shown — never one it invented.
+    """
+    return extract_inline_citations(text, max_index=max_index)
 
 
 def _quote_for(chunk: RetrievedChunk, limit: int = 320) -> str:
@@ -367,7 +382,7 @@ async def answer_question(
     if greeting_plan:
         result = AnswerResult(
             text=random.choice(_GREETING_REPLIES),
-            found=True,
+            found=False,
             intent="greeting",
         )
         if persist:
@@ -378,7 +393,7 @@ async def answer_question(
             action="chat.answer",
             resource_type="conversation",
             resource_id=conversation_id,
-            metadata={"intent": "greeting", "found": True, "citations": 0},
+            metadata={"intent": "greeting", "found": False, "citations": 0},
         )
         await session.commit()
         return result
@@ -452,7 +467,11 @@ async def answer_question(
 
     valid_indices = set(range(1, len(chunks) + 1))
     requested = [i for i in response.citations if i in valid_indices]
-    inline = [i for i in _extract_citation_indices(response.text) if i in valid_indices]
+    inline = [
+        i
+        for i in _extract_citation_indices(response.text, max_index=len(chunks))
+        if i in valid_indices
+    ]
     used = sorted(set(requested) | set(inline))
 
     found = bool(response.found) and bool(response.text.strip()) and bool(used)
@@ -523,9 +542,18 @@ async def _persist(
         await session.flush()
         conversation_id = conversation.id
     else:
-        conversation = await session.get(Conversation, conversation_id)
-        if conversation is None or conversation.user_id != user.id:
-            raise ValueError("Conversation not found")
+        # Appending to an existing conversation needs "contribute" access. A
+        # caller with no access at all gets the same answer as a caller naming
+        # a conversation that does not exist, so nothing is disclosed.
+        conversation, access = await resolve_conversation_access(
+            session, user, conversation_id
+        )
+        if conversation is None or access == ACCESS_NONE:
+            raise NotFoundError("Conversation not found")
+        if not can_contribute(access):
+            raise ForbiddenError(
+                "You have read access to this conversation but cannot add to it"
+            )
 
     session.add(
         Message(

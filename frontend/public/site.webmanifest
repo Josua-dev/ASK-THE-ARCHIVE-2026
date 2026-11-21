@@ -1,0 +1,17 @@
+{
+  "name": "Ask the Archive",
+  "short_name": "Archive",
+  "description": "Enterprise document intelligence with permission-aware retrieval, cited answers and honest abstention.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F3F1EC",
+  "theme_color": "#171A1D",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

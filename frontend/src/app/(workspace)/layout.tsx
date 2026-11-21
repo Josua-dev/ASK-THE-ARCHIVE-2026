@@ -15,9 +15,9 @@ function Gate({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <div className="grid-field flex min-h-screen items-center justify-center">
-        <div className="flex items-center gap-3 text-steel">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-charcoal/20 border-t-copper" />
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-border/40 border-t-accent" />
           <span className="text-[12px]">Loading workspace…</span>
         </div>
       </div>

@@ -10,6 +10,7 @@ from datetime import date
 from app.modules.chat.service import (
     ABSTENTION_TEXT,
     _extract_citation_indices,
+    plan_greeting,
     plan_metadata_query,
 )
 from app.ports.llm import NO_ANSWER
@@ -92,3 +93,28 @@ class TestAbstention:
         """The sentinel is an internal protocol value — it must never reach
         the user as if it were the answer."""
         assert NO_ANSWER not in ABSTENTION_TEXT
+
+
+class TestGreetingPlanner:
+    def test_hi_is_greeting(self):
+        assert plan_greeting("hi") == {"intent": "greeting"}
+
+    def test_hello_is_greeting(self):
+        assert plan_greeting("hello") == {"intent": "greeting"}
+
+    def test_hey_there_is_greeting(self):
+        assert plan_greeting("hey there") == {"intent": "greeting"}
+
+    def test_help_alone_is_greeting(self):
+        assert plan_greeting("help") == {"intent": "greeting"}
+
+    def test_help_desk_is_not_greeting(self):
+        assert plan_greeting(
+            "Who is the help desk contact for the Kestrel contract?"
+        ) is None
+
+    def test_thanks_not_greeting(self):
+        assert plan_greeting("Thanks for your time") is None
+
+    def test_good_morning_is_greeting(self):
+        assert plan_greeting("good morning") == {"intent": "greeting"}

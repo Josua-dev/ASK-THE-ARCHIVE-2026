@@ -51,10 +51,26 @@ class TestChunking:
         for c in chunks:
             assert c.text.strip()
 
-    def test_tiny_paragraph_is_dropped(self):
-        """Fragments below the floor are discarded — they are noise to a model."""
+    def test_tiny_fragment_below_the_floor_is_dropped(self):
+        """A fragment that would form its own sub-floor chunk is discarded.
+
+        Embedded on its own it is noise to a model, and it would occupy a
+        passage slot in the retrieval set.
+        """
+        chunks = chunk_pages(pages((1, f"ok.\n\n{'B' * (TARGET_CHARS + 200)}")))
+        assert len(chunks) == 1
+        assert "ok." not in chunks[0].text
+
+    def test_a_page_whose_only_content_is_short_still_yields_a_chunk(self):
+        """A one-line note must not become invisible.
+
+        A page with nothing but a short fragment would otherwise produce no
+        chunk at all, and the document could never be retrieved, cited or
+        summarised. The floor applies within a page, not to a page alone.
+        """
         chunks = chunk_pages(pages((1, "ok.")))
-        assert chunks == []
+        assert len(chunks) == 1
+        assert chunks[0].text == "ok."
 
     def test_paragraph_above_floor_is_kept(self):
         body = "A" * (MIN_CHARS + 20)

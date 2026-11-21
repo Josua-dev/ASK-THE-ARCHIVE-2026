@@ -6,6 +6,7 @@ document is generated with real extractable text so the pipeline, the metadata
 extractor and the citations all work on genuine documents rather than fixtures.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fpdf import FPDF
@@ -35,6 +36,11 @@ class Doc(FPDF):
         self.set_title(title)
         self.set_author("Northbridge Asset Management")
         self.set_creator("Ask the Archive seed corpus")
+        # fpdf stamps the current time into the PDF, which would make every
+        # regeneration a byte-for-byte different file and leave the working
+        # tree dirty after a seed. Pinning the timestamp makes the corpus
+        # reproducible: the same seed always yields the same bytes.
+        self.set_creation_date(datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     def header(self):
         self.set_font("Helvetica", "B", 8)

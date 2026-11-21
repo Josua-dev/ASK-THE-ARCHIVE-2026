@@ -55,18 +55,36 @@ async def app_error_handler(request: Request, exc: AppError):
 
 
 from app.modules.admin.router import router as admin_router  # noqa: E402
+from app.modules.analytics.router import router as analytics_router  # noqa: E402
 from app.modules.auth.router import router as auth_router  # noqa: E402
 from app.modules.chat.router import router as chat_router  # noqa: E402
+from app.modules.compare.router import router as compare_router  # noqa: E402
+from app.modules.conversation_share.router import router as sharing_router  # noqa: E402
 from app.modules.documents.router import router as documents_router  # noqa: E402
+from app.modules.documents.router import warehouse_router  # noqa: E402
+from app.modules.extraction.router import router as extraction_router  # noqa: E402
+from app.modules.graph.router import router as graph_router  # noqa: E402
+from app.modules.insights.router import router as insights_router  # noqa: E402
+from app.modules.profiles.router import router as profiles_router  # noqa: E402
+from app.modules.research.router import router as research_router  # noqa: E402
 from app.modules.search.router import router as search_router  # noqa: E402
 from app.modules.summaries.router import router as summaries_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(documents_router)
+app.include_router(warehouse_router)
 app.include_router(chat_router)
 app.include_router(summaries_router)
 app.include_router(search_router)
 app.include_router(admin_router)
+app.include_router(profiles_router)
+app.include_router(compare_router)
+app.include_router(research_router)
+app.include_router(graph_router)
+app.include_router(extraction_router)
+app.include_router(insights_router)
+app.include_router(analytics_router)
+app.include_router(sharing_router)
 
 
 @app.get("/api/v1/health")

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.deps import get_current_user
+from app.core.errors import ForbiddenError, NotFoundError, ValidationError
 from app.db.models.conversation import Conversation
 from app.db.models.citation import Citation
 from app.db.models.message import Message
@@ -20,12 +22,24 @@ from app.db.session import get_db_session
 from app.modules.chat.service import (
     ABSTENTION_TEXT,
     SYSTEM_PROMPT,
+    AnswerResult,
+    CitationOut as ServiceCitationOut,
     answer_question,
     build_context,
     plan_greeting,
     plan_keyword,
     plan_metadata_query,
     _extract_citation_indices,
+    _persist,
+)
+from app.modules.conversation_share.service import (
+    ACCESS_CONTRIBUTE,
+    ACCESS_NONE,
+    ACCESS_OWNER,
+    ACCESS_READ,
+    can_contribute,
+    list_shared_conversations,
+    resolve_conversation_access,
 )
 from app.modules.documents.permissions import permission_filter
 from app.modules.retrieval.service import search
@@ -73,6 +87,27 @@ class ConversationOut(BaseModel):
     id: uuid.UUID
     title: Optional[str] = None
     created_at: Optional[str] = None
+    # "owner", "contribute" or "read" — what the caller may do with it.
+    access: str = ACCESS_OWNER
+
+
+async def _require_contribute(
+    session: AsyncSession, user, conversation_id: uuid.UUID
+) -> None:
+    """Refuse to write to a conversation the caller may not add to.
+
+    A conversation the caller cannot see at all is reported as missing, so a
+    404 never reveals that someone else's conversation exists.
+    """
+    conversation, access = await resolve_conversation_access(
+        session, user, conversation_id
+    )
+    if conversation is None or access == ACCESS_NONE:
+        raise NotFoundError("Conversation not found")
+    if not can_contribute(access):
+        raise ForbiddenError(
+            "You have read access to this conversation but cannot add to it"
+        )
 
 
 @router.post("/ask", response_model=AnswerOut)
@@ -81,9 +116,17 @@ async def ask(
     session: AsyncSession = Depends(get_db_session),
     user=Depends(get_current_user),
 ):
-    result = await answer_question(
-        session, user, payload.question, conversation_id=payload.conversation_id
-    )
+    if payload.conversation_id is not None:
+        await _require_contribute(session, user, payload.conversation_id)
+    try:
+        result = await answer_question(
+            session, user, payload.question, conversation_id=payload.conversation_id
+        )
+    except ValueError as exc:
+        # The service refuses input it cannot answer — an empty question, a
+        # conversation the caller may not write to. Those are the caller's
+        # mistake, not a server fault, so they must not surface as a 500.
+        raise ValidationError(str(exc)) from exc
     conversation_id = payload.conversation_id
     if conversation_id is None and result.message_id is not None:
         conversation_id = await session.scalar(
@@ -118,10 +161,28 @@ async def stream(
     user=Depends(get_current_user),
 ):
     """Server-sent events: evidence, answer deltas, citations, done."""
+    if payload.conversation_id is not None:
+        await _require_contribute(session, user, payload.conversation_id)
+    # `no-transform` matters more than it looks.
+    #
+    # The browser reaches this endpoint through the frontend's rewrite proxy,
+    # and Next runs every response through its compression middleware. The
+    # middleware gzips anything whose content type is compressible — and
+    # `text/event-stream` is — which means the whole stream is buffered until
+    # the model has finished. The user would watch an empty panel for a minute
+    # and then see the entire answer appear at once, with no streaming at all.
+    #
+    # `Cache-Control: no-transform` is the standard way to tell an
+    # intermediary not to transform the body, and it is what makes the
+    # middleware leave this response alone. `X-Accel-Buffering: no` does the
+    # same job for nginx.
     return StreamingResponse(
-        _event_stream(session, user, payload.question),
+        _event_stream(session, user, payload.question, payload.conversation_id),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -130,7 +191,10 @@ async def _sse(event: str, data: dict) -> str:
 
 
 async def _event_stream(
-    session: AsyncSession, user, question: str
+    session: AsyncSession,
+    user,
+    question: str,
+    conversation_id: Optional[uuid.UUID] = None,
 ) -> AsyncIterator[str]:
     question = (question or "").strip()
     if not question:
@@ -138,93 +202,15 @@ async def _event_stream(
         return
 
     # Deterministic paths — answered without a model call.
-    greeting_plan = plan_greeting(question)
-    if greeting_plan:
-        result = await answer_question(session, user, question, persist=True)
-        yield await _sse(
-            "evidence",
-            {
-                "intent": result.intent,
-                "found": result.found,
-                "passages": [
-                    {
-                        "index": c.index,
-                        "document_id": str(c.document_id),
-                        "filename": c.filename,
-                        "page_start": c.page_start,
-                        "page_end": c.page_end,
-                        "quote": c.quote,
-                    }
-                    for c in result.citations
-                ],
-            },
-        )
-        yield await _sse("delta", {"text": result.text})
-        yield await _sse(
-            "citations",
-            {
-                "citations": [
-                    {
-                        "index": c.index,
-                        "document_id": str(c.document_id),
-                        "filename": c.filename,
-                        "page_start": c.page_start,
-                        "page_end": c.page_end,
-                        "quote": c.quote,
-                    }
-                    for c in result.citations
-                ]
-            },
-        )
-        yield await _sse("done", {"found": result.found, "intent": result.intent})
-        return
-
-    # Deterministic metadata path — answered without a model call.
-    plan = plan_metadata_query(question)
+    plan = (
+        plan_greeting(question)
+        or plan_metadata_query(question)
+        or plan_keyword(question)
+    )
     if plan:
-        result = await answer_question(session, user, question, persist=True)
-        yield await _sse(
-            "evidence",
-            {
-                "intent": result.intent,
-                "found": result.found,
-                "passages": [
-                    {
-                        "index": c.index,
-                        "document_id": str(c.document_id),
-                        "filename": c.filename,
-                        "page_start": c.page_start,
-                        "page_end": c.page_end,
-                        "quote": c.quote,
-                    }
-                    for c in result.citations
-                ],
-            },
+        result = await answer_question(
+            session, user, question, persist=True, conversation_id=conversation_id
         )
-        yield await _sse("delta", {"text": result.text})
-        yield await _sse(
-            "citations",
-            {
-                "citations": [
-                    {
-                        "index": c.index,
-                        "document_id": str(c.document_id),
-                        "filename": c.filename,
-                        "page_start": c.page_start,
-                        "page_end": c.page_end,
-                        "quote": c.quote,
-                    }
-                    for c in result.citations
-                ]
-            },
-        )
-        yield await _sse("done", {"found": result.found, "intent": result.intent})
-        return
-
-    # Keyword search — deterministic ILIKE across all accessible documents.
-    keyword_plan = plan_keyword(question)
-    if keyword_plan:
-        result = await answer_question(session, user, question, persist=True)
         yield await _sse(
             "evidence",
             {
@@ -279,6 +265,16 @@ async def _event_stream(
         yield await _sse("delta", {"text": ABSTENTION_TEXT})
         yield await _sse("citations", {"citations": []})
         yield await _sse("done", {"found": False, "intent": "semantic"})
+        if conversation_id is not None:
+            # The turn belongs to the conversation the caller named — record it
+            # the same way a non-streamed answer is recorded.
+            await _persist(
+                session,
+                user,
+                conversation_id,
+                question,
+                AnswerResult(text=ABSTENTION_TEXT, found=False, intent="semantic"),
+            )
         await record_audit(
             session,
             actor_id=user.id,
@@ -327,23 +323,56 @@ async def _event_stream(
         used: list[int] = []
     else:
         used = sorted(
-            {i for i in _extract_citation_indices(answer) if 1 <= i <= len(chunks)}
+            {
+                i
+                for i in _extract_citation_indices(answer, max_index=len(chunks))
+                if 1 <= i <= len(chunks)
+            }
         )
         found = bool(used)
 
-    citations = [
-        {
-            "index": i,
-            "document_id": str(chunks[i - 1].document_id),
-            "filename": chunks[i - 1].filename,
-            "page_start": chunks[i - 1].page_start,
-            "page_end": chunks[i - 1].page_end,
-            "quote": " ".join(chunks[i - 1].text.split())[:320],
-            "score": round(chunks[i - 1].score, 4),
-        }
+    citation_rows = [
+        ServiceCitationOut(
+            index=i,
+            document_id=chunks[i - 1].document_id,
+            filename=chunks[i - 1].filename,
+            page_start=chunks[i - 1].page_start,
+            page_end=chunks[i - 1].page_end,
+            quote=" ".join(chunks[i - 1].text.split())[:320],
+            score=chunks[i - 1].score,
+        )
         for i in used
     ]
+    citations = [
+        {
+            "index": c.index,
+            "document_id": str(c.document_id),
+            "filename": c.filename,
+            "page_start": c.page_start,
+            "page_end": c.page_end,
+            "quote": c.quote,
+            "score": round(c.score, 4) if c.score is not None else None,
+        }
+        for c in citation_rows
+    ]
     yield await _sse("citations", {"citations": citations})
+
+    if conversation_id is not None:
+        # The turn belongs to the conversation the caller named — record it the
+        # same way a non-streamed answer is recorded.
+        await _persist(
+            session,
+            user,
+            conversation_id,
+            question,
+            AnswerResult(
+                text=answer,
+                found=found,
+                citations=citation_rows,
+                evidence=chunks,
+                intent="semantic",
+            ),
+        )
 
     await record_audit(
         session,
@@ -361,20 +390,37 @@ async def conversations(
     session: AsyncSession = Depends(get_db_session),
     user=Depends(get_current_user),
 ):
+    """The caller's own conversations plus the ones shared with them."""
     stmt = (
         select(Conversation)
         .where(Conversation.user_id == user.id)
         .order_by(Conversation.created_at.desc())
         .limit(100)
     )
-    rows = (await session.execute(stmt)).scalars().all()
+    owned = list((await session.execute(stmt)).scalars().all())
+    shared = await list_shared_conversations(session, user, limit=100)
+
+    # A conversation may be owned and shared back — keep the owner's view of it.
+    merged: dict[uuid.UUID, tuple[Conversation, str]] = {
+        c.id: (c, ACCESS_OWNER) for c in owned
+    }
+    for conversation, access in shared:
+        merged.setdefault(conversation.id, (conversation, access))
+
+    items = sorted(
+        merged.values(),
+        key=lambda item: item[0].created_at
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )[:100]
     return [
         ConversationOut(
             id=c.id,
             title=c.title,
             created_at=c.created_at.isoformat() if c.created_at else None,
+            access=access,
         )
-        for c in rows
+        for c, access in items
     ]
 
 
@@ -384,8 +430,11 @@ async def conversation_messages(
     session: AsyncSession = Depends(get_db_session),
     user=Depends(get_current_user),
 ):
-    conversation = await session.get(Conversation, conversation_id)
-    if conversation is None or conversation.user_id != user.id:
+    conversation, access = await resolve_conversation_access(
+        session, user, conversation_id
+    )
+    if conversation is None or access not in (ACCESS_OWNER, ACCESS_CONTRIBUTE, ACCESS_READ):
+        # No access at all — do not disclose that the conversation exists.
         return []
     stmt = (
         select(Message)

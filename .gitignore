@@ -32,3 +32,21 @@ backend/ask_resp.json
 backend/uv8000*
 backend/uploads/
 frontend/tsconfig.tsbuildinfo
+
+# Stale artefacts from the earlier AWS-shaped prototype. The platform is
+# local-first now: no AWS service is used or referenced anywhere in the code.
+AWS_Services_Inventory.docx
+Technology_Stack_Inventory.docx
+generate_aws_doc.py
+generate_stack_doc.py
+
+# Local model caches and downloaded corpora
+backend/seed/
+backend/.models/
+
+# One-off scratch files from manual probing. These are throwaway diagnostics,
+# not part of the application.
+backend/*_tmp.py
+backend/scripts/_probe*.py
+backend/scripts/_*.json
+frontend/frontend.log

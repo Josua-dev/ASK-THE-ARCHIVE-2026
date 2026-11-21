@@ -1,0 +1,35 @@
+# The image installs its own dependencies. Copying the host's virtualenv would
+# put a Windows interpreter and its absolute paths on top of the Linux one.
+.venv
+venv
+
+# Local environment files. The container gets its configuration from compose.
+.env
+.env.*
+!.env.example
+
+# Generated corpora, model caches and runtime artefacts. The container
+# regenerates the corpus and downloads its own model weights.
+seed
+.models
+uploads
+__pycache__
+*.pyc
+.pytest_cache
+
+# Logs and scratch output
+*.log
+*.err.log
+server.log
+
+# Editor and OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# The stale AWS-era artefacts are not part of the application.
+AWS_Services_Inventory.docx
+Technology_Stack_Inventory.docx
+generate_aws_doc.py
+generate_stack_doc.py

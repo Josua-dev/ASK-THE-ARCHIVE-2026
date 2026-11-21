@@ -1,0 +1,162 @@
+# ── Ask the Archive ──────────────────────────────────────────────────────────
+#
+# The complete application, running locally.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:3000 and sign in with one of the seeded accounts:
+#
+#   admin@archivedemo.example.com  / Archive!2026   (sees everything)
+#   analyst@archivedemo.example.com / Archive!2026  (sees the leases + contracts)
+#   viewer@archivedemo.example.com  / Archive!2026  (sees only the two policies)
+#
+# No service in this file reaches a hosted model provider. Inference runs in
+# Ollama, embeddings run in Sentence Transformers inside the backend image,
+# extraction runs in PyMuPDF and Tesseract, and the database is PostgreSQL with
+# pgvector.
+
+services:
+  # ── Database ──────────────────────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: archive-db
+    environment:
+      POSTGRES_USER: archive
+      POSTGRES_PASSWORD: archive
+      POSTGRES_DB: archive
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archive -d archive"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ── Local inference ───────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: archive-ollama
+    environment:
+      # Ollama binds to loopback by default, which makes the container
+      # unreachable from the backend over the compose network. Bind every
+      # interface inside the container's own network namespace; the port is
+      # still only published to the host on 11434.
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # Pulls the answering model once, into the ollama volume. The backend waits
+  # for this to finish before it needs to generate anything.
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: archive-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "pulling qwen2.5:7b-instruct …"
+        ollama pull qwen2.5:7b-instruct
+        echo "model ready"
+    restart: "no"
+
+  # ── Backend ───────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: archive-backend
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://archive:archive@db:5432/archive
+      DATABASE_URL_POOLED: postgresql://archive:archive@db:5432/archive
+      JWT_SECRET: ${JWT_SECRET:-ask-the-archive-local-compose-secret}
+      JWT_ACCESS_TTL_MIN: 30
+      JWT_REFRESH_TTL_DAYS: 7
+      SIGNED_LINK_TTL_SEC: 120
+
+      STORAGE_IMPL: local
+      STORAGE_ROOT: /app/uploads
+
+      EXTRACTOR_IMPL: pymupdf
+      OCR_IMPL: tesseract
+      RENDER_DPI: 144
+      PREVIEW_MAX_PX: 1600
+
+      EMBEDDER_IMPL: sentence-transformers
+      EMBEDDING_MODEL_NAME: BAAI/bge-m3
+      EMBEDDING_DIMENSIONS: 1024
+      EMBEDDING_DEVICE: cpu
+
+      LLM_IMPL: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:7b-instruct
+      OLLAMA_NUM_CTX: 16384
+      OLLAMA_TIMEOUT_SEC: 600
+
+      MIN_SCORE: 0.30
+      TOP_K: 6
+      MAX_UPLOAD_MB: 50
+      CHUNK_TARGET_CHARS: 1200
+      CHUNK_OVERLAP_CHARS: 160
+      MAX_CONTEXT_CHARS: 24000
+
+      CORS_ORIGINS: http://localhost:3000
+
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@archivedemo.example.com}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Archive!2026}
+      SEED_DEMO_PASSWORD: ${SEED_DEMO_PASSWORD:-Archive!2026}
+    ports:
+      - "8000:8000"
+    volumes:
+      - archive-uploads:/app/uploads
+    # Seed on first boot. The seed is skipped when the archive already holds
+    # documents and users, so a restart does not re-ingest the corpus.
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m scripts.seed --if-empty &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    container_name: archive-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Inlined into the client bundle at build time, so it is a build
+        # argument rather than a runtime environment variable.
+        NEXT_PUBLIC_API_BASE: /api/v1
+    environment:
+      API_PROXY_TARGET: http://backend:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:
+  ollama-models:
+  archive-uploads:
