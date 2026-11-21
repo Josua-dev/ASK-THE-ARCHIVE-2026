@@ -13,6 +13,7 @@ from app.db.types import tstz, utcnow
 
 if TYPE_CHECKING:
     from app.db.models.chunk import DocumentChunk
+    from app.db.models.document_checkout import DocumentCheckout
     from app.db.models.document_summary import DocumentSummary
     from app.db.models.ingestion_job import IngestionJob
     from app.db.models.permission import DocumentPermission
@@ -36,6 +37,14 @@ class Document(Base):
     classification_confidence = Column(Float, nullable=True)
     extracted_metadata = Column(JSONB, nullable=True)
     expiry_date = Column(Date, nullable=True, index=True)
+    # The physical slot this document occupies in the warehouse. The four
+    # parts travel together: a shelf number means nothing without the rack
+    # and zone that hold it, so a partially-located document is a state the
+    # database refuses rather than a state the UI has to interpret.
+    zone = Column(Text, nullable=True)
+    rack = Column(Text, nullable=True)
+    shelf = Column(Text, nullable=True)
+    box = Column(Text, nullable=True)
     uploaded_by = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(tstz(), nullable=False, default=utcnow)
     indexed_at = Column(tstz(), nullable=True)
@@ -44,3 +53,4 @@ class Document(Base):
     permissions = relationship("DocumentPermission", back_populates="document", cascade="all, delete-orphan", passive_deletes=True)
     ingestion_jobs = relationship("IngestionJob", back_populates="document", cascade="all, delete-orphan", passive_deletes=True)
     summaries = relationship("DocumentSummary", back_populates="document", cascade="all, delete-orphan", passive_deletes=True)
+    checkouts = relationship("DocumentCheckout", back_populates="document", cascade="all, delete-orphan", passive_deletes=True)

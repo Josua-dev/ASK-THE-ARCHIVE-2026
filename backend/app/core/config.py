@@ -119,9 +119,25 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     # ── Seed data ─────────────────────────────────────────────────────────
-    seed_admin_email: str = "admin@askthearchive.local"
-    seed_admin_password: str = "ArchiveAdmin!2026"
-    seed_demo_password: str = "ArchiveDemo!2026"
+    # How far ahead archive insights look for expiries and due obligations.
+    insight_expiry_horizon_days: int = 90
+    insight_obligation_horizon_days: int = 30
+    # Below this profile confidence an extraction is flagged for review.
+    insight_low_confidence: float = 0.5
+
+    # How long a document may be checked out before it is overdue. "Overdue"
+    # is computed from due_at and never stored, so this constant only sets the
+    # default when a checkout does not name its own due date.
+    checkout_default_due_days: int = 7
+
+    # The seeded demo accounts. The seed script reads these rather than
+    # hard-coding a second copy of the credentials, so the README, the
+    # compose file and the accounts that actually exist cannot drift apart.
+    seed_admin_email: str = "admin@archivedemo.example.com"
+    seed_analyst_email: str = "analyst@archivedemo.example.com"
+    seed_viewer_email: str = "viewer@archivedemo.example.com"
+    seed_admin_password: str = "Archive!2026"
+    seed_demo_password: str = "Archive!2026"
 
     @property
     def async_database_url(self) -> str:
